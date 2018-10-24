@@ -18,14 +18,16 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FluentMigrator.Exceptions;
+using FluentMigrator.Infrastructure.Extensions;
 using FluentMigrator.Model;
+using FluentMigrator.Oracle;
 using FluentMigrator.Runner.Generators.Base;
 
 namespace FluentMigrator.Runner.Generators.Oracle
 {
     internal class OracleColumn : ColumnBase
     {
-        private const int OracleObjectNameMaxLength = 30;
+        private const int OracleObjectNameMaxLength = 128;
 
         public OracleColumn(IQuoter quoter)
             : base(new OracleTypeMap(), quoter)
@@ -46,7 +48,7 @@ namespace FluentMigrator.Runner.Generators.Oracle
         {
             if (column.IsIdentity)
             {
-                throw new DatabaseOperationNotSupportedException("Oracle does not support identity columns. Please use a SEQUENCE instead");
+                return GetIdentityString(column);
             }
             return string.Empty;
         }
@@ -55,20 +57,25 @@ namespace FluentMigrator.Runner.Generators.Oracle
         protected override string FormatNullable(ColumnDefinition column)
         {
             //Creates always return Not Null unless is nullable is true
-            if (column.ModificationType == ColumnModificationType.Create) {
-                if (column.IsNullable.HasValue && column.IsNullable.Value) {
+            if (column.ModificationType == ColumnModificationType.Create)
+            {
+                if (column.IsNullable.HasValue && column.IsNullable.Value || column.IsIdentity)
+                {
                     return string.Empty;
                 }
-                else {
+                else
+                {
                     return "NOT NULL";
                 }
             }
 
             //alter only returns "Not Null" if IsNullable is explicitly set
-            if (column.IsNullable.HasValue) {
+            if (column.IsNullable.HasValue)
+            {
                 return column.IsNullable.Value ? "NULL" : "NOT NULL";
             }
-            else {
+            else
+            {
                 return string.Empty;
             }
 
@@ -98,5 +105,59 @@ namespace FluentMigrator.Runner.Generators.Oracle
             var result = string.Format("CONSTRAINT {0} ", Quoter.QuoteConstraintName(primaryKeyName));
             return result;
         }
+
+        private static string GetIdentityString(ColumnDefinition column)
+        {
+            string generationType;
+            switch (column.GetAdditionalFeature(OracleExtensions.IdentityGeneration, OracleGenerationType.Always))
+            {
+                case OracleGenerationType.Always:
+                    generationType = "ALWAYS";
+                    break;
+                case OracleGenerationType.ByDefault:
+                    generationType = "BY DEFAULT";
+                    break;
+                case OracleGenerationType.ByDefaultOnNull:
+                    generationType = "BY DEFAULT ON NULL";
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException();
+            }
+
+            var options = new List<string>();
+
+            var startWith = column.GetAdditionalFeature(OracleExtensions.IdentityStartWith, (long?)null);
+            if (startWith != null)
+            {
+                options.Add($"START WITH: {startWith.Value:D}");
+            }
+
+            var incrementBy = column.GetAdditionalFeature(OracleExtensions.IdentityIncrementBy, (long?)null);
+            if (incrementBy != null)
+            {
+                options.Add($"INCREMENT BY: {incrementBy.Value:D}");
+            }
+
+            var minValue = column.GetAdditionalFeature(OracleExtensions.IdentityMinValue, (long?)null);
+            if (minValue != null)
+            {
+                options.Add($"MIN_VALUE: {minValue.Value:D}");
+            }
+
+            var maxValue = column.GetAdditionalFeature(OracleExtensions.IdentityMaxValue, (long?)null);
+            if (maxValue != null)
+            {
+                options.Add($"MAX_VALUE: {maxValue.Value:D}");
+            }
+
+            var optionsString = "";
+            if (options.Count > 0)
+            {
+                optionsString = $"({string.Join(", ", options)})";
+            }
+
+            return $"GENERATED {generationType} AS IDENTITY {optionsString}";
+        }
+
     }
 }
